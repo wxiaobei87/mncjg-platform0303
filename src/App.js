@@ -28,7 +28,7 @@ function App() {
     const cd = parseFloat(inputData.Cd) || 0;
     const pb = parseFloat(inputData.Pb) || 0;
     const nap = parseFloat(inputData.Nap) || 0;
-    const biochar = parseFloat(inputData.biocharContent) || 0;
+    //const biochar = parseFloat(inputData.biocharContent) || 0;
     const pH = parseFloat(inputData.pH) || 7;
     const temp = parseFloat(inputData.temperature) || 25;
 
