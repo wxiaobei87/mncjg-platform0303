@@ -1,82 +1,11 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect } from "react";
 import * as recharts from "recharts";
 
 const {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
-  ResponsiveContainer, BarChart, Bar, RadarChart, Radar, PolarGrid,
-  PolarAngleAxis, PolarRadiusAxis, ScatterChart, Scatter, ZAxis,
-  AreaChart, Area, ComposedChart, Cell, ReferenceLine
+  ResponsiveContainer, AreaChart, Area, ReferenceLine,
+  ScatterChart, Scatter, ZAxis
 } = recharts;
-
-// ==================== SIMULATION ENGINE ====================
-const MODEL_PARAMS = {
-  MNCJG: { base: 92, timeK: 0.18, phOpt: 6.0, phSens: 3.5, concDecay: 0.008, synergy: 5 },
-  MNC:   { base: 78, timeK: 0.14, phOpt: 6.0, phSens: 4.0, concDecay: 0.012, synergy: 0 },
-  NC:    { base: 55, timeK: 0.10, phOpt: 5.5, phSens: 5.0, concDecay: 0.018, synergy: 0 },
-  NCJG:  { base: 72, timeK: 0.15, phOpt: 6.0, phSens: 3.8, concDecay: 0.010, synergy: 3 },
-  MWM:   { base: 65, timeK: 0.12, phOpt: 5.5, phSens: 4.5, concDecay: 0.015, synergy: 0 },
-};
-
-const POLLUTANT_MOD = {
-  "Cd(II)":  { phDir: 1,  optMul: 1.05, concBase: 5 },
-  "Pb(II)":  { phDir: 1,  optMul: 1.08, concBase: 5 },
-  "As(III)": { phDir: -1, optMul: 0.92, concBase: 5 },
-  "Nap":     { phDir: 0,  optMul: 0.88, concBase: 50 },
-};
-
-function predictRemoval(adsorbent, pollutant, pH, concentration, time, competition = false) {
-  const m = MODEL_PARAMS[adsorbent];
-  const p = POLLUTANT_MOD[pollutant];
-  if (!m || !p) return { mean: 0, std: 5 };
-  const kinetic = 1 - Math.exp(-m.timeK * time);
-  let phEffect;
-  if (p.phDir === 1) {
-    phEffect = 1 / (1 + Math.exp(-1.5 * (pH - 4.5)));
-  } else if (p.phDir === -1) {
-    phEffect = 1 / (1 + Math.exp(1.2 * (pH - 6.5)));
-  } else {
-    phEffect = 0.85 + 0.15 * Math.exp(-0.3 * Math.pow(pH - 6, 2));
-  }
-  const concEffect = Math.exp(-m.concDecay * (concentration - p.concBase));
-  const compPenalty = competition ? 0.92 : 1.0;
-  let removal = m.base * kinetic * phEffect * concEffect * p.optMul * compPenalty;
-  removal = Math.min(100, Math.max(0, removal + m.synergy));
-  const std = 2.0 + 3.0 * (1 - kinetic) + 1.5 * Math.abs(pH - m.phOpt) / 3;
-  return { mean: Math.round(removal * 100) / 100, std: Math.round(std * 100) / 100 };
-}
-
-function bayesianOptimize(pollutant, adsorbent, targetRemoval, phRange, timeRange, concRange, nIter = 60) {
-  let bestParams = null;
-  let bestScore = -Infinity;
-  const history = [];
-  for (let i = 0; i < nIter; i++) {
-    const pH = phRange[0] + Math.random() * (phRange[1] - phRange[0]);
-    const time = timeRange[0] + Math.random() * (timeRange[1] - timeRange[0]);
-    const conc = concRange[0] + Math.random() * (concRange[1] - concRange[0]);
-    const pred = predictRemoval(adsorbent, pollutant, pH, conc, time);
-    const ei = pred.mean - targetRemoval + 0.5 * pred.std;
-    const score = pred.mean >= targetRemoval ? pred.mean - 0.1 * pred.std : ei;
-    history.push({ iteration: i + 1, pH: +pH.toFixed(2), time: +time.toFixed(1), concentration: +conc.toFixed(1), predicted: pred.mean, std: pred.std, score: +score.toFixed(2) });
-    if (score > bestScore) {
-      bestScore = score;
-      bestParams = { pH: +pH.toFixed(2), time: +time.toFixed(1), concentration: +conc.toFixed(1), predicted: pred.mean, std: pred.std };
-    }
-  }
-  return { best: bestParams, history };
-}
-
-function computeSHAP(adsorbent, pollutant, pH, concentration, time) {
-  const base = predictRemoval(adsorbent, pollutant, 6, 10, 15).mean;
-  const features = [
-    { name: "Contact Time", value: predictRemoval(adsorbent, pollutant, 6, 10, time).mean - base },
-    { name: "Initial pH", value: predictRemoval(adsorbent, pollutant, pH, 10, 15).mean - base },
-    { name: "Concentration", value: predictRemoval(adsorbent, pollutant, 6, concentration, 15).mean - base },
-    { name: "Adsorbent Type", value: predictRemoval(adsorbent, pollutant, 6, 10, 15).mean - predictRemoval("NC", pollutant, 6, 10, 15).mean },
-    { name: "Pollutant Type", value: predictRemoval(adsorbent, pollutant, 6, 10, 15).mean - predictRemoval(adsorbent, "Cd(II)", 6, 10, 15).mean },
-    { name: "Competition", value: -3.2 },
-  ];
-  return features.map(f => ({ ...f, value: +f.value.toFixed(2), absValue: +Math.abs(f.value).toFixed(2) })).sort((a, b) => b.absValue - a.absValue);
-}
 
 const COLORS = {
   bg: "#0a0e1a", surface: "#111827", surfaceHover: "#1a2332", card: "#151d2e",
@@ -88,6 +17,9 @@ const COLORS = {
 const POLLUTANT_COLORS = {
   "Cd(II)": "#06d6a0", "Pb(II)": "#118ab2", "As(III)": "#ef476f", "Nap": "#ffd166",
 };
+const POLLUTANTS = Object.keys(POLLUTANT_COLORS);
+const ADSORBENTS = ["MNCJG", "MNC", "NC", "NCJG", "MWM"];
+const MODEL_API_BASE_URL = (process.env.REACT_APP_API_BASE_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
 
 function GlowDot({ color = COLORS.primary, size = 8 }) {
   return <span style={{ display: "inline-block", width: size, height: size, borderRadius: "50%", background: color, boxShadow: `0 0 ${size}px ${color}60` }} />;
@@ -163,116 +95,81 @@ function PredictionPanel() {
   const [pH, setPH] = useState(6);
   const [conc, setConc] = useState(5);
   const [time, setTime] = useState(30);
-  const [comp, setComp] = useState(false);
-  const pred = useMemo(() => predictRemoval(ads, pol, pH, conc, time, comp), [ads, pol, pH, conc, time, comp]);
-  const shap = useMemo(() => computeSHAP(ads, pol, pH, conc, time), [ads, pol, pH, conc, time]);
-  const kineticData = useMemo(() => {
-    const pts = [];
-    for (let t = 0; t <= 30; t += 1) {
-      const r = predictRemoval(ads, pol, pH, conc, t, comp);
-      pts.push({ time: t, removal: r.mean, upper: Math.min(100, r.mean + 1.96 * r.std), lower: Math.max(0, r.mean - 1.96 * r.std) });
-    }
-    return pts;
-  }, [ads, pol, pH, conc, comp]);
-  const phData = useMemo(() => {
-    const pts = [];
-    for (let p = 2; p <= 8; p += 0.5) {
-      const pollutants = ["Cd(II)", "Pb(II)", "As(III)", "Nap"];
-      const row = { pH: p };
-      pollutants.forEach(pl => { row[pl] = predictRemoval(ads, pl, p, conc, time).mean; });
-      pts.push(row);
-    }
-    return pts;
-  }, [ads, conc, time]);
-  const polColor = POLLUTANT_COLORS[pol] || COLORS.primary;
+  const [volume, setVolume] = useState(50);
+  const [mass, setMass] = useState(0.1);
+  const [predictions, setPredictions] = useState(null);
+  const [apiError, setApiError] = useState("");
+  const [loading, setLoading] = useState(false);
+  const metric = { r2: 0.9951, rmse: 2.5242, mae: 1.9038, n: 288 };
+  const pollColor = POLLUTANT_COLORS[pol] || COLORS.primary;
+
+  useEffect(() => {
+    let cancelled = false;
+    const times = Array.from({ length: 31 }, (_, i) => i);
+    const phs = Array.from({ length: 13 }, (_, i) => +(2 + i * 0.5).toFixed(1));
+    const requests = [
+      { adsorbent: ads, pollutant: pol, pH, concentration: conc, volume, mass, time },
+      ...times.map(t => ({ adsorbent: ads, pollutant: pol, pH, concentration: conc, volume, mass, time: t })),
+      ...phs.flatMap(ph => POLLUTANTS.map(pl => ({ adsorbent: ads, pollutant: pl, pH: ph, concentration: conc, volume, mass, time }))),
+    ];
+    setLoading(true);
+    setApiError("");
+    fetch(`${MODEL_API_BASE_URL}/api/predict/batch`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(requests),
+    }).then(r => { if (!r.ok) throw new Error(`Model API returned ${r.status}`); return r.json(); })
+      .then(rows => { if (!cancelled) setPredictions({ rows, times, phs }); })
+      .catch(e => { if (!cancelled) setApiError("NGBoost API is unavailable. Check the configured model API URL and service status. " + e.message); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [ads, pol, pH, conc, time, volume, mass]);
+
+  const rows = predictions?.rows || [];
+  const pred = rows[0] || { mean: 0, std: 0, lower95: 0, upper95: 0 };
+  const kineticData = predictions ? predictions.times.map((t, i) => ({ time: t, removal: rows[i + 1].mean, upper: rows[i + 1].upper95, lower: rows[i + 1].lower95 })) : [];
+  const phStart = 1 + predictions?.times.length;
+  const phData = predictions ? predictions.phs.map((ph, i) => {
+    const row = { pH: ph };
+    POLLUTANTS.forEach((pl, j) => { row[pl] = rows[phStart + i * POLLUTANTS.length + j].mean; });
+    return row;
+  }) : [];
   return (
     <div style={{ display: "grid", gridTemplateColumns: "320px 1fr", gap: 24, minHeight: 600 }}>
       <div style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 20, padding: 24, display: "flex", flexDirection: "column", gap: 20 }}>
-        <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.text, fontFamily: "'Space Grotesk', sans-serif", paddingBottom: 12, borderBottom: `1px solid ${COLORS.border}` }}>⚙️ Input Parameters</div>
+        <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.text, paddingBottom: 12, borderBottom: `1px solid ${COLORS.border}` }}>⚙️ Input Parameters</div>
         <Select label="Adsorbent" value={ads} onChange={setAds} options={["MNCJG", "MNC", "NC", "NCJG", "MWM"]} />
         <Select label="Pollutant" value={pol} onChange={setPol} options={["Cd(II)", "Pb(II)", "As(III)", "Nap"]} />
         <Slider label="pH" value={pH} onChange={setPH} min={2} max={8} step={0.5} />
         <Slider label="Concentration" value={conc} onChange={setConc} min={1} max={pol === "Nap" ? 100 : 40} step={1} unit=" mg/L" />
         <Slider label="Contact Time" value={time} onChange={setTime} min={0} max={30} step={1} unit=" min" />
-        <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", fontSize: 13, color: COLORS.textDim }}>
-          <input type="checkbox" checked={comp} onChange={e => setComp(e.target.checked)} style={{ accentColor: COLORS.primary }} />
-          Competing Ions Present
-        </label>
-        <div style={{ background: `linear-gradient(135deg, ${polColor}10, ${COLORS.surface})`, border: `1px solid ${polColor}30`, borderRadius: 16, padding: 20, textAlign: "center", marginTop: "auto" }}>
-          <div style={{ fontSize: 11, color: COLORS.textMuted, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 8 }}>Predicted Removal</div>
-          <div style={{ fontSize: 48, fontWeight: 800, color: polColor, fontFamily: "'Space Grotesk', sans-serif", lineHeight: 1 }}>{pred.mean.toFixed(1)}<span style={{ fontSize: 20 }}>%</span></div>
-          <div style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 8 }}>95% CI: [{Math.max(0, pred.mean - 1.96 * pred.std).toFixed(1)}%, {Math.min(100, pred.mean + 1.96 * pred.std).toFixed(1)}%]</div>
-          <div style={{ fontSize: 11, color: COLORS.textMuted, marginTop: 4 }}>σ = {pred.std.toFixed(2)}</div>
+        <Slider label="Solution Volume" value={volume} onChange={setVolume} min={10} max={100} step={10} unit=" mL" />
+        <Slider label="Adsorbent Mass" value={mass} onChange={setMass} min={0.02} max={0.5} step={0.01} unit=" g" />
+        <div style={{ background: `linear-gradient(135deg, ${pollColor}10, ${COLORS.surface})`, border: `1px solid ${pollColor}30`, borderRadius: 16, padding: 20, textAlign: "center", marginTop: "auto" }}>
+          <div style={{ fontSize: 11, color: COLORS.textMuted, textTransform: "uppercase", marginBottom: 8 }}>NGBoost Predicted Removal</div>
+          <div style={{ fontSize: 48, fontWeight: 800, color: pollColor, lineHeight: 1 }}>{loading ? "…" : pred.mean.toFixed(1)}<span style={{ fontSize: 20 }}>%</span></div>
+          <div style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 8 }}>Model predictive 95% interval: [{(pred.lower95 ?? 0).toFixed(1)}%, {(pred.upper95 ?? 0).toFixed(1)}%]</div>
+          {apiError && <div style={{ color: COLORS.accent, fontSize: 11, marginTop: 8 }}>{apiError}</div>}
         </div>
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
-          <MetricCard label="R² Score" value="0.982" unit="" color={COLORS.primary} subtitle="NGBoost Test Set" icon="📊" />
-          <MetricCard label="RMSE" value="3.85" unit="" color={COLORS.secondary} subtitle="Root Mean Sq Error" icon="📉" />
-          <MetricCard label="MAPE" value="2.8" unit="%" color={COLORS.warning} subtitle="Validation Error" icon="🎯" />
-          <MetricCard label="Samples" value="285" unit="" color={COLORS.accent} subtitle="Training Dataset" icon="🧪" />
+          <MetricCard label="R² Score" value={metric.r2.toFixed(4)} color={COLORS.primary} subtitle="NGBoost held-out test set" icon="📊" />
+          <MetricCard label="RMSE" value={metric.rmse.toFixed(4)} color={COLORS.secondary} subtitle="Removal percentage points" icon="📉" />
+          <MetricCard label="MAE" value={metric.mae.toFixed(4)} color={COLORS.warning} subtitle="Removal percentage points" icon="🎯" />
+          <MetricCard label="Samples" value={metric.n} color={COLORS.accent} subtitle="Model-development dataset" icon="🧪" />
         </div>
+        <div style={{ fontSize: 11, color: COLORS.textMuted }}>Predictions and intervals are returned by the retrained NGBoost model; performance metrics are from the 58-row held-out test set.</div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, flex: 1 }}>
           <div style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 16, padding: 20 }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.text, marginBottom: 16, fontFamily: "'Space Grotesk', sans-serif" }}>⏱ Adsorption Kinetics — {pol}</div>
-            <ResponsiveContainer width="100%" height={220}>
-              <AreaChart data={kineticData}>
-                <defs>
-                  <linearGradient id="kinGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor={polColor} stopOpacity={0.3} />
-                    <stop offset="100%" stopColor={polColor} stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke={COLORS.border} />
-                <XAxis dataKey="time" stroke={COLORS.textMuted} fontSize={11} label={{ value: "Time (min)", position: "bottom", offset: -5, fill: COLORS.textMuted, fontSize: 10 }} />
-                <YAxis domain={[0, 105]} stroke={COLORS.textMuted} fontSize={11} label={{ value: "Removal (%)", angle: -90, position: "insideLeft", fill: COLORS.textMuted, fontSize: 10 }} />
-                <Tooltip contentStyle={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 8, fontSize: 12 }} />
-                <Area type="monotone" dataKey="upper" stroke="none" fill={`${polColor}15`} />
-                <Area type="monotone" dataKey="lower" stroke="none" fill={COLORS.card} />
-                <Line type="monotone" dataKey="removal" stroke={polColor} strokeWidth={2.5} dot={false} />
-                <ReferenceLine x={time} stroke={COLORS.accent} strokeDasharray="4 4" />
-              </AreaChart>
-            </ResponsiveContainer>
+            <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.text, marginBottom: 16 }}>⏱ Adsorption Kinetics — {pol}</div>
+            <ResponsiveContainer width="100%" height={220}><AreaChart data={kineticData}><CartesianGrid strokeDasharray="3 3" stroke={COLORS.border} /><XAxis dataKey="time" stroke={COLORS.textMuted} fontSize={11} /><YAxis domain={[0, 105]} stroke={COLORS.textMuted} fontSize={11} /><Tooltip /><Area type="monotone" dataKey="upper" stroke="none" fill={`${pollColor}15`} /><Area type="monotone" dataKey="lower" stroke="none" fill={COLORS.card} /><Line type="monotone" dataKey="removal" stroke={pollColor} strokeWidth={2.5} dot={false} /><ReferenceLine x={time} stroke={COLORS.accent} strokeDasharray="4 4" /></AreaChart></ResponsiveContainer>
           </div>
           <div style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 16, padding: 20 }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.text, marginBottom: 16, fontFamily: "'Space Grotesk', sans-serif" }}>🧪 pH Response — All Pollutants</div>
-            <ResponsiveContainer width="100%" height={220}>
-              <LineChart data={phData}>
-                <CartesianGrid strokeDasharray="3 3" stroke={COLORS.border} />
-                <XAxis dataKey="pH" stroke={COLORS.textMuted} fontSize={11} label={{ value: "pH", position: "bottom", offset: -5, fill: COLORS.textMuted, fontSize: 10 }} />
-                <YAxis domain={[0, 105]} stroke={COLORS.textMuted} fontSize={11} />
-                <Tooltip contentStyle={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 8, fontSize: 12 }} />
-                {Object.entries(POLLUTANT_COLORS).map(([name, color]) => (
-                  <Line key={name} type="monotone" dataKey={name} stroke={color} strokeWidth={name === pol ? 3 : 1.5} dot={false} strokeOpacity={name === pol ? 1 : 0.5} />
-                ))}
-                <ReferenceLine x={pH} stroke={COLORS.textMuted} strokeDasharray="4 4" />
-              </LineChart>
-            </ResponsiveContainer>
+            <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.text, marginBottom: 16 }}>🧪 NGBoost pH Response — All Pollutants</div>
+            <ResponsiveContainer width="100%" height={220}><LineChart data={phData}><CartesianGrid strokeDasharray="3 3" stroke={COLORS.border} /><XAxis dataKey="pH" stroke={COLORS.textMuted} fontSize={11} /><YAxis domain={[0, 105]} stroke={COLORS.textMuted} fontSize={11} /><Tooltip />{Object.entries(POLLUTANT_COLORS).map(([name, color]) => <Line key={name} type="monotone" dataKey={name} stroke={color} strokeWidth={name === pol ? 3 : 1.5} dot={false} strokeOpacity={name === pol ? 1 : 0.5} />)}<ReferenceLine x={pH} stroke={COLORS.textMuted} strokeDasharray="4 4" /></LineChart></ResponsiveContainer>
           </div>
-          <div style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 16, padding: 20 }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.text, marginBottom: 16, fontFamily: "'Space Grotesk', sans-serif" }}>🔍 SHAP Feature Attribution</div>
-            <ResponsiveContainer width="100%" height={220}>
-              <BarChart data={shap} layout="vertical" margin={{ left: 80 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke={COLORS.border} />
-                <XAxis type="number" stroke={COLORS.textMuted} fontSize={11} label={{ value: "SHAP Value", position: "bottom", offset: -5, fill: COLORS.textMuted, fontSize: 10 }} />
-                <YAxis type="category" dataKey="name" stroke={COLORS.textMuted} fontSize={11} width={80} />
-                <Tooltip contentStyle={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 8, fontSize: 12 }} />
-                <Bar dataKey="value" radius={[0, 6, 6, 0]}>
-                  {shap.map((entry, i) => <Cell key={i} fill={entry.value >= 0 ? COLORS.primary : COLORS.accent} fillOpacity={0.8} />)}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-          <div style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 16, padding: 20 }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.text, marginBottom: 16, fontFamily: "'Space Grotesk', sans-serif" }}>📊 Multi-Pollutant Profile — {ads}</div>
-            <ResponsiveContainer width="100%" height={220}>
-              <RadarChart data={["Cd(II)", "Pb(II)", "As(III)", "Nap"].map(p => ({ pollutant: p, removal: predictRemoval(ads, p, pH, p === "Nap" ? 50 : conc, time).mean }))}>
-                <PolarGrid stroke={COLORS.border} />
-                <PolarAngleAxis dataKey="pollutant" tick={{ fill: COLORS.textDim, fontSize: 11 }} />
-                <PolarRadiusAxis domain={[0, 100]} tick={{ fill: COLORS.textMuted, fontSize: 9 }} />
-                <Radar dataKey="removal" stroke={COLORS.primary} fill={COLORS.primary} fillOpacity={0.2} strokeWidth={2} />
-              </RadarChart>
-            </ResponsiveContainer>
+          <div style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 16, padding: 20, gridColumn: "1 / -1" }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.text }}>Model details</div>
+            <div style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 8 }}>NGBoost fitted on 288 observations; test metrics use the common 58-observation held-out set. This working build does not display SHAP values until the explainer is connected to the deployed pipeline.</div>
           </div>
         </div>
       </div>
@@ -290,184 +187,144 @@ function OptimizationPanel() {
   const [timeMax, setTimeMax] = useState(30);
   const [concMin, setConcMin] = useState(1);
   const [concMax, setConcMax] = useState(20);
+  const [volume, setVolume] = useState(50);
+  const [mass, setMass] = useState(0.1);
   const [result, setResult] = useState(null);
   const [running, setRunning] = useState(false);
-  const runOptimization = useCallback(() => {
-    setRunning(true);
-    setTimeout(() => {
-      const res = bayesianOptimize(pol, ads, target, [phMin, phMax], [timeMin, timeMax], [concMin, concMax], 80);
-      setResult(res);
-      setRunning(false);
-    }, 800);
-  }, [pol, ads, target, phMin, phMax, timeMin, timeMax, concMin, concMax]);
+  const [error, setError] = useState("");
   const polColor = POLLUTANT_COLORS[pol] || COLORS.primary;
-  return (
+
+  const runOptimization = async () => {
+    setRunning(true);
+    setError("");
+    setResult(null);
+    try {
+      const samples = Array.from({ length: 80 }, (_, i) => ({
+        iteration: i + 1,
+        pH: +(phMin + Math.random() * (phMax - phMin)).toFixed(2),
+        time: +(timeMin + Math.random() * (timeMax - timeMin)).toFixed(1),
+        concentration: +(concMin + Math.random() * (concMax - concMin)).toFixed(1),
+      }));
+      const requests = samples.map(s => ({ adsorbent: ads, pollutant: pol, pH: s.pH, concentration: s.concentration, volume, mass, time: s.time }));
+      const response = await fetch(`${MODEL_API_BASE_URL}/api/predict/batch`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(requests),
+      });
+      if (!response.ok) throw new Error(`Model API returned ${response.status}`);
+      const predictions = await response.json();
+      const history = samples.map((s, i) => ({ ...s, ...predictions[i] }));
+      const acceptable = history.filter(x => x.mean >= target);
+      const best = acceptable.length
+        ? [...acceptable].sort((a, b) => a.time - b.time || a.concentration - b.concentration || b.mean - a.mean)[0]
+        : [...history].sort((a, b) => (b.lower95 ?? b.mean) - (a.lower95 ?? a.mean))[0];
+      const phs = Array.from({ length: 21 }, (_, i) => +(phMin + i * (phMax - phMin) / 20).toFixed(2));
+      const sensResponse = await fetch(`${MODEL_API_BASE_URL}/api/predict/batch`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(phs.map(pH => ({ adsorbent: ads, pollutant: pol, pH, concentration: best.concentration, volume, mass, time: best.time }))),
+      });
+      if (!sensResponse.ok) throw new Error(`Sensitivity API returned ${sensResponse.status}`);
+      const sensPredictions = await sensResponse.json();
+      setResult({
+        best,
+        targetMet: acceptable.length > 0,
+        history: history.map((x, i) => ({ ...x, bestSoFar: Math.max(...history.slice(0, i + 1).map(y => y.mean)) })),
+        sensitivity: phs.map((pH, i) => ({ pH, mean: sensPredictions[i].mean, upper: sensPredictions[i].upper95, lower: sensPredictions[i].lower95 })),
+      });
+    } catch (e) {
+      setError(`NGBoost API is unavailable or returned an error: ${e.message}`);
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  return <div style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 18, padding: 28, color: COLORS.textMuted, lineHeight: 1.7 }}>
     <div style={{ display: "grid", gridTemplateColumns: "320px 1fr", gap: 24, minHeight: 600 }}>
-      <div style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 20, padding: 24, display: "flex", flexDirection: "column", gap: 18 }}>
-        <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.text, fontFamily: "'Space Grotesk', sans-serif", paddingBottom: 12, borderBottom: `1px solid ${COLORS.border}` }}>🎯 Optimization Objectives</div>
-        <Select label="Target Pollutant" value={pol} onChange={setPol} options={["Cd(II)", "Pb(II)", "As(III)", "Nap"]} />
+      <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 16, padding: 22, display: "flex", flexDirection: "column", gap: 15 }}>
+        <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.text, paddingBottom: 10, borderBottom: `1px solid ${COLORS.border}` }}>🎯 Optimization Objectives</div>
+        <Select label="Target Pollutant" value={pol} onChange={v => { setPol(v); setConcMax(v === "Nap" ? 100 : 20); }} options={["Cd(II)", "Pb(II)", "As(III)", "Nap"]} />
         <Select label="Adsorbent" value={ads} onChange={setAds} options={["MNCJG", "MNC", "NC", "NCJG", "MWM"]} />
         <Slider label="Target Removal" value={target} onChange={setTarget} min={50} max={99} step={1} unit="%" />
-        <div style={{ fontSize: 12, fontWeight: 600, color: COLORS.textMuted, marginTop: 8, textTransform: "uppercase", letterSpacing: "0.08em" }}>Search Space Bounds</div>
+        <div style={{ fontSize: 11, fontWeight: 600, color: COLORS.textMuted, textTransform: "uppercase", letterSpacing: "0.08em" }}>Search Space Bounds</div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
           <Slider label="pH min" value={phMin} onChange={setPhMin} min={2} max={7} step={0.5} />
           <Slider label="pH max" value={phMax} onChange={setPhMax} min={3} max={8} step={0.5} />
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-          <Slider label="Time min" value={timeMin} onChange={setTimeMin} min={0} max={25} step={1} unit="m" />
-          <Slider label="Time max" value={timeMax} onChange={setTimeMax} min={5} max={30} step={1} unit="m" />
+          <Slider label="Time min" value={timeMin} onChange={setTimeMin} min={0} max={25} step={1} unit=" min" />
+          <Slider label="Time max" value={timeMax} onChange={setTimeMax} min={5} max={30} step={1} unit=" min" />
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-          <Slider label="Conc min" value={concMin} onChange={setConcMin} min={1} max={30} step={1} unit="" />
-          <Slider label="Conc max" value={concMax} onChange={setConcMax} min={5} max={pol === "Nap" ? 100 : 40} step={1} unit="" />
+          <Slider label="Conc min" value={concMin} onChange={setConcMin} min={1} max={30} step={1} unit=" mg/L" />
+          <Slider label="Conc max" value={concMax} onChange={setConcMax} min={5} max={pol === "Nap" ? 100 : 40} step={1} unit=" mg/L" />
         </div>
-        <button onClick={runOptimization} disabled={running} style={{ padding: "14px 20px", borderRadius: 12, border: "none", cursor: running ? "wait" : "pointer", background: running ? COLORS.border : `linear-gradient(135deg, ${COLORS.primary}, ${COLORS.secondary})`, color: "#fff", fontSize: 14, fontWeight: 700, fontFamily: "'Space Grotesk', sans-serif", transition: "all 0.3s", marginTop: "auto" }}>
-          {running ? "⏳ Optimizing..." : "🚀 Run Bayesian Optimization"}
+        <Slider label="Solution Volume" value={volume} onChange={setVolume} min={10} max={100} step={10} unit=" mL" />
+        <Slider label="Adsorbent Mass" value={mass} onChange={setMass} min={0.02} max={0.5} step={0.01} unit=" g" />
+        <button onClick={runOptimization} disabled={running || phMin >= phMax || timeMin >= timeMax || concMin >= concMax} style={{ padding: "13px 16px", borderRadius: 12, border: "none", cursor: running ? "wait" : "pointer", background: running ? COLORS.border : `linear-gradient(135deg, ${COLORS.primary}, ${COLORS.secondary})`, color: "#fff", fontSize: 13, fontWeight: 700, marginTop: "auto" }}>
+          {running ? "⏳ Evaluating with NGBoost…" : "🚀 Run model-based search"}
         </button>
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-        {result ? (
-          <>
-            <div style={{ background: `linear-gradient(135deg, ${polColor}08, ${COLORS.card})`, border: `1px solid ${polColor}30`, borderRadius: 20, padding: 24 }}>
-              <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.text, marginBottom: 16, fontFamily: "'Space Grotesk', sans-serif" }}>✅ Recommended Optimal Conditions</div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 12 }}>
-                <MetricCard label="Optimal pH" value={result.best.pH} unit="" color={COLORS.primary} />
-                <MetricCard label="Optimal Time" value={result.best.time} unit="min" color={COLORS.secondary} />
-                <MetricCard label="Concentration" value={result.best.concentration} unit="mg/L" color={COLORS.warning} />
-                <MetricCard label="Predicted" value={result.best.predicted.toFixed(1)} unit="%" color={polColor} />
-                <MetricCard label="Uncertainty" value={`±${(1.96 * result.best.std).toFixed(1)}`} unit="%" color={COLORS.textMuted} />
-              </div>
+        <div style={{ background: `${COLORS.secondary}10`, border: `1px solid ${COLORS.secondary}30`, borderRadius: 12, padding: 14, fontSize: 12, color: COLORS.textDim }}>
+          Eighty candidate conditions are scored by the fitted NGBoost API. The search samples pH, contact time, and concentration; solution volume and adsorbent mass are held at the selected values. This is model-based random search, not Bayesian optimization or prospective material design.
+        </div>
+        {error && <div style={{ color: COLORS.accent, background: `${COLORS.accent}12`, borderRadius: 10, padding: 12, fontSize: 12 }}>{error}</div>}
+        {result ? <>
+          <div style={{ background: COLORS.surface, border: `1px solid ${polColor}40`, borderRadius: 16, padding: 20 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.text, marginBottom: 12 }}>{result.targetMet ? "✅ Candidate conditions meeting the target" : "⚠️ Target not reached in sampled conditions; best lower-confidence candidate"}</div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10 }}>
+              <MetricCard label="pH" value={result.best.pH} color={COLORS.primary} />
+              <MetricCard label="Time" value={result.best.time} unit="min" color={COLORS.secondary} />
+              <MetricCard label="Concentration" value={result.best.concentration} unit="mg/L" color={COLORS.warning} />
+              <MetricCard label="Predicted" value={result.best.mean.toFixed(1)} unit="%" color={polColor} />
+              <MetricCard label="95% interval" value={`${result.best.lower95.toFixed(1)}–${result.best.upper95.toFixed(1)}`} unit="%" color={COLORS.textMuted} />
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, flex: 1 }}>
-              <div style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 16, padding: 20 }}>
-                <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.text, marginBottom: 16, fontFamily: "'Space Grotesk', sans-serif" }}>📈 Optimization Convergence</div>
-                <ResponsiveContainer width="100%" height={250}>
-                  <ComposedChart data={result.history.map((h, i) => ({ ...h, bestSoFar: Math.max(...result.history.slice(0, i + 1).map(x => x.predicted)) }))}>
-                    <CartesianGrid strokeDasharray="3 3" stroke={COLORS.border} />
-                    <XAxis dataKey="iteration" stroke={COLORS.textMuted} fontSize={11} label={{ value: "Iteration", position: "bottom", offset: -5, fill: COLORS.textMuted, fontSize: 10 }} />
-                    <YAxis stroke={COLORS.textMuted} fontSize={11} label={{ value: "Removal (%)", angle: -90, position: "insideLeft", fill: COLORS.textMuted, fontSize: 10 }} />
-                    <Tooltip contentStyle={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 8, fontSize: 11 }} />
-                    <Scatter dataKey="predicted" fill={`${polColor}60`} r={3} />
-                    <Line type="monotone" dataKey="bestSoFar" stroke={COLORS.accent} strokeWidth={2} dot={false} />
-                    <ReferenceLine y={target} stroke={COLORS.warning} strokeDasharray="5 5" label={{ value: `Target: ${target}%`, fill: COLORS.warning, fontSize: 10 }} />
-                  </ComposedChart>
-                </ResponsiveContainer>
-              </div>
-              <div style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 16, padding: 20 }}>
-                <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.text, marginBottom: 16, fontFamily: "'Space Grotesk', sans-serif" }}>🗺 pH–Time Exploration Map</div>
-                <ResponsiveContainer width="100%" height={250}>
-                  <ScatterChart>
-                    <CartesianGrid strokeDasharray="3 3" stroke={COLORS.border} />
-                    <XAxis dataKey="pH" name="pH" stroke={COLORS.textMuted} fontSize={11} domain={[phMin, phMax]} label={{ value: "pH", position: "bottom", offset: -5, fill: COLORS.textMuted, fontSize: 10 }} />
-                    <YAxis dataKey="time" name="Time" stroke={COLORS.textMuted} fontSize={11} domain={[timeMin, timeMax]} label={{ value: "Time (min)", angle: -90, position: "insideLeft", fill: COLORS.textMuted, fontSize: 10 }} />
-                    <ZAxis dataKey="predicted" range={[20, 200]} name="Removal" />
-                    <Tooltip cursor={{ strokeDasharray: "3 3" }} contentStyle={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 8, fontSize: 11 }} />
-                    <Scatter data={result.history} fill={polColor} fillOpacity={0.6}>
-                      {result.history.map((entry, i) => <Cell key={i} fill={entry.predicted >= target ? COLORS.primary : `${COLORS.accent}80`} />)}
-                    </Scatter>
-                  </ScatterChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
-            <div style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 16, padding: 20 }}>
-              <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.text, marginBottom: 16, fontFamily: "'Space Grotesk', sans-serif" }}>🌊 Sensitivity Analysis — Operating Window</div>
-              <ResponsiveContainer width="100%" height={200}>
-                <AreaChart data={(() => { const data = []; for (let p = phMin; p <= phMax; p += 0.2) { const pred = predictRemoval(ads, pol, p, result.best.concentration, result.best.time); data.push({ pH: +p.toFixed(1), removal: pred.mean, upper: Math.min(100, pred.mean + 1.96 * pred.std), lower: Math.max(0, pred.mean - 1.96 * pred.std) }); } return data; })()}>
-                  <defs>
-                    <linearGradient id="sensGrad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor={polColor} stopOpacity={0.3} />
-                      <stop offset="100%" stopColor={polColor} stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke={COLORS.border} />
-                  <XAxis dataKey="pH" stroke={COLORS.textMuted} fontSize={11} label={{ value: "pH", position: "bottom", offset: -5, fill: COLORS.textMuted, fontSize: 10 }} />
-                  <YAxis domain={[0, 105]} stroke={COLORS.textMuted} fontSize={11} label={{ value: "Removal (%)", angle: -90, position: "insideLeft", fill: COLORS.textMuted, fontSize: 10 }} />
-                  <Tooltip contentStyle={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 8, fontSize: 12 }} />
-                  <Area type="monotone" dataKey="upper" stroke="none" fill={`${polColor}12`} />
-                  <Area type="monotone" dataKey="lower" stroke="none" fill={COLORS.card} />
-                  <Area type="monotone" dataKey="removal" stroke={polColor} fill="url(#sensGrad)" strokeWidth={2} />
-                  <ReferenceLine y={target} stroke={COLORS.warning} strokeDasharray="5 5" />
-                  <ReferenceLine x={result.best.pH} stroke={COLORS.accent} strokeDasharray="4 4" />
-                </AreaChart>
-              </ResponsiveContainer>
-            </div>
-          </>
-        ) : (
-          <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 20, padding: 40 }}>
-            <div style={{ fontSize: 64, marginBottom: 16, opacity: 0.3 }}>🧪</div>
-            <div style={{ fontSize: 18, fontWeight: 600, color: COLORS.textDim, fontFamily: "'Space Grotesk', sans-serif" }}>Configure & Run Optimization</div>
-            <div style={{ fontSize: 13, color: COLORS.textMuted, marginTop: 8, textAlign: "center", maxWidth: 400 }}>Set your remediation objectives and parameter search bounds, then launch Bayesian optimization to find the optimal process conditions.</div>
           </div>
-        )}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+            <div style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 16, padding: 18 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.text, marginBottom: 12 }}>📈 Candidate search progression</div>
+              <ResponsiveContainer width="100%" height={240}><LineChart data={result.history}><CartesianGrid strokeDasharray="3 3" stroke={COLORS.border} /><XAxis dataKey="iteration" stroke={COLORS.textMuted} fontSize={10} /><YAxis domain={[0, 105]} stroke={COLORS.textMuted} fontSize={10} /><Tooltip /><ReferenceLine y={target} stroke={COLORS.warning} strokeDasharray="5 5" /><Line type="monotone" dataKey="bestSoFar" stroke={COLORS.primary} strokeWidth={2.5} dot={false} /><Line type="monotone" dataKey="mean" stroke={polColor} strokeWidth={1} dot={false} strokeOpacity={0.35} /></LineChart></ResponsiveContainer>
+            </div>
+            <div style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 16, padding: 18 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.text, marginBottom: 12 }}>🗺 pH–Time candidate map (bubble size = predicted removal)</div>
+              <ResponsiveContainer width="100%" height={240}><ScatterChart><CartesianGrid strokeDasharray="3 3" stroke={COLORS.border} /><XAxis dataKey="pH" type="number" domain={[phMin, phMax]} name="pH" stroke={COLORS.textMuted} fontSize={10} /><YAxis dataKey="time" type="number" domain={[timeMin, timeMax]} name="Time (min)" stroke={COLORS.textMuted} fontSize={10} /><ZAxis dataKey="mean" range={[30, 180]} name="Predicted removal" /><Tooltip cursor={{ strokeDasharray: "3 3" }} /><Scatter data={result.history} fill={polColor} fillOpacity={0.65} /></ScatterChart></ResponsiveContainer>
+            </div>
+          </div>
+          <div style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 16, padding: 18 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.text, marginBottom: 12 }}>🌊 NGBoost pH response at the selected time and concentration</div>
+            <ResponsiveContainer width="100%" height={220}><AreaChart data={result.sensitivity}><CartesianGrid strokeDasharray="3 3" stroke={COLORS.border} /><XAxis dataKey="pH" stroke={COLORS.textMuted} fontSize={10} /><YAxis domain={[0, 105]} stroke={COLORS.textMuted} fontSize={10} /><Tooltip /><ReferenceLine y={target} stroke={COLORS.warning} strokeDasharray="5 5" /><Area type="monotone" dataKey="upper" stroke="none" fill={`${polColor}18`} /><Area type="monotone" dataKey="lower" stroke="none" fill={COLORS.card} /><Line type="monotone" dataKey="mean" stroke={polColor} strokeWidth={2.5} dot={false} /></AreaChart></ResponsiveContainer>
+          </div>
+        </> : <div style={{ flex: 1, minHeight: 280, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 18, padding: 36, textAlign: "center" }}>
+          <div style={{ fontSize: 56, marginBottom: 14, opacity: 0.45 }}>🧪</div><div style={{ fontSize: 17, fontWeight: 600, color: COLORS.textDim }}>Configure and run the model-based search</div><div style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 8, maxWidth: 460 }}>The platform will evaluate candidate operating conditions using the deployed NGBoost model and return its prediction interval.</div>
+        </div>}
       </div>
     </div>
-  );
+  </div>;
 }
 
 function ModelBenchmarkPanel() {
   const models = [
-    { name: "NGBoost", r2: 0.9821, rmse: 3.8500, category: "Boosting", color: COLORS.primary },
-    { name: "CatBoost", r2: 0.9844, rmse: 4.0200, category: "Boosting", color: "#8b5cf6" },
-    { name: "AdaBoost", r2: 0.9823, rmse: 4.4200, category: "Boosting", color: "#a78bfa" },
-    { name: "Random Forest", r2: 0.9421, rmse: 7.9930, category: "Bagging", color: COLORS.secondary },
-    { name: "ExtraTrees", r2: 0.9363, rmse: 8.3839, category: "Bagging", color: "#38bdf8" },
-    { name: "XGBoost", r2: 0.9366, rmse: 4.3500, category: "Boosting", color: "#818cf8" },
-    { name: "DecisionTree", r2: 0.8509, rmse: 12.8263, category: "Single Tree", color: COLORS.warning },
-    { name: "ElasticNet", r2: 0.4524, rmse: 24.5810, category: "Linear", color: COLORS.accent },
-    { name: "KNN", r2: 0.3481, rmse: 26.8198, category: "Instance", color: "#f97316" },
+    { name: "NGBoost", r2: 0.9950997145, rmse: 2.5241557038, mae: 1.9038054541, category: "Probabilistic boosting", color: COLORS.primary },
+    { name: "Random Forest", r2: 0.9927969989, rmse: 3.0602872383, mae: 2.2544665919, category: "Bagging", color: COLORS.secondary },
+    { name: "CatBoost", r2: 0.9911935375, rmse: 3.3838117758, mae: 2.3035697668, category: "Boosting", color: "#8b5cf6" },
+    { name: "XGBoost", r2: 0.9902544372, rmse: 3.5596632424, mae: 2.6598125963, category: "Boosting", color: "#818cf8" },
+    { name: "ExtraTrees", r2: 0.9820201998, rmse: 4.8350156215, mae: 3.6087907345, category: "Bagging", color: "#38bdf8" },
+    { name: "Decision Tree", r2: 0.9745567438, rmse: 5.7516413409, mae: 3.7547240374, category: "Tree-based", color: COLORS.warning },
+    { name: "AdaBoost", r2: 0.9424944448, rmse: 8.6468983143, mae: 6.8100703639, category: "Boosting", color: "#a78bfa" },
+    { name: "KNN", r2: 0.4907808795, rmse: 25.7310674158, mae: 17.8414446857, category: "Instance-based", color: "#f97316" },
+    { name: "ElasticNet", r2: 0.3499474076, rmse: 29.0723205644, mae: 24.2660157600, category: "Linear", color: COLORS.accent },
   ];
-  const scatterData = useMemo(() => { const data = []; for (let i = 0; i < 60; i++) { const actual = 10 + Math.random() * 85; const noise = (Math.random() - 0.5) * 8; data.push({ actual: +actual.toFixed(1), predicted: +(actual + noise).toFixed(1) }); } return data; }, []);
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-        <div style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 16, padding: 20 }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.text, marginBottom: 16, fontFamily: "'Space Grotesk', sans-serif" }}>📊 R² Score Benchmark (Test Set)</div>
-          <ResponsiveContainer width="100%" height={320}>
-            <BarChart data={models} layout="vertical" margin={{ left: 100 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke={COLORS.border} />
-              <XAxis type="number" domain={[0, 1]} stroke={COLORS.textMuted} fontSize={11} />
-              <YAxis type="category" dataKey="name" stroke={COLORS.textMuted} fontSize={11} width={100} />
-              <Tooltip contentStyle={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 8, fontSize: 12 }} />
-              <Bar dataKey="r2" radius={[0, 8, 8, 0]} barSize={20}>
-                {models.map((m, i) => <Cell key={i} fill={m.color} fillOpacity={0.8} />)}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-        <div style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 16, padding: 20 }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.text, marginBottom: 16, fontFamily: "'Space Grotesk', sans-serif" }}>🎯 NGBoost: Predicted vs. Actual (R² = 0.982)</div>
-          <ResponsiveContainer width="100%" height={320}>
-            <ScatterChart>
-              <CartesianGrid strokeDasharray="3 3" stroke={COLORS.border} />
-              <XAxis dataKey="actual" name="Actual" stroke={COLORS.textMuted} fontSize={11} domain={[0, 100]} label={{ value: "Actual Removal (%)", position: "bottom", offset: -5, fill: COLORS.textMuted, fontSize: 10 }} />
-              <YAxis dataKey="predicted" name="Predicted" stroke={COLORS.textMuted} fontSize={11} domain={[0, 100]} label={{ value: "Predicted (%)", angle: -90, position: "insideLeft", fill: COLORS.textMuted, fontSize: 10 }} />
-              <Tooltip cursor={{ strokeDasharray: "3 3" }} contentStyle={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 8, fontSize: 12 }} />
-              <ReferenceLine segment={[{ x: 0, y: 0 }, { x: 100, y: 100 }]} stroke={COLORS.accent} strokeDasharray="5 5" strokeOpacity={0.5} />
-              <Scatter data={scatterData} fill={COLORS.primary} fillOpacity={0.6} r={4} />
-            </ScatterChart>
-          </ResponsiveContainer>
-        </div>
+      <div style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 16, padding: 20, color: COLORS.textMuted, fontSize: 12 }}>
+        Metrics are from the common 58-observation held-out test set. The modeling dataset contained 288 observations (230 training, 58 test); each model used the same train/test partition and target scale.
       </div>
       <div style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 16, padding: 20, overflow: "auto" }}>
-        <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.text, marginBottom: 16, fontFamily: "'Space Grotesk', sans-serif" }}>📋 Comprehensive Model Benchmark</div>
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, fontFamily: "'Space Grotesk', sans-serif" }}>
-          <thead>
-            <tr style={{ borderBottom: `2px solid ${COLORS.border}` }}>
-              {["Rank", "Model", "Category", "R²", "RMSE", "Performance"].map(h => <th key={h} style={{ padding: "10px 16px", textAlign: "left", color: COLORS.textMuted, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.08em" }}>{h}</th>)}
-            </tr>
-          </thead>
-          <tbody>
-            {models.map((m, i) => (
-              <tr key={m.name} style={{ borderBottom: `1px solid ${COLORS.border}` }}>
-                <td style={{ padding: "12px 16px", color: COLORS.textDim }}>#{i + 1}</td>
-                <td style={{ padding: "12px 16px", color: COLORS.text, fontWeight: 600 }}><GlowDot color={m.color} /><span style={{ marginLeft: 8 }}>{m.name}</span>{i === 0 && <span style={{ marginLeft: 8, fontSize: 10, background: `${COLORS.primary}20`, color: COLORS.primary, padding: "2px 8px", borderRadius: 20 }}>BEST</span>}</td>
-                <td style={{ padding: "12px 16px", color: COLORS.textDim }}>{m.category}</td>
-                <td style={{ padding: "12px 16px", color: m.r2 > 0.95 ? COLORS.primary : m.r2 > 0.8 ? COLORS.warning : COLORS.accent, fontWeight: 600 }}>{m.r2.toFixed(4)}</td>
-                <td style={{ padding: "12px 16px", color: COLORS.textDim }}>{m.rmse.toFixed(2)}</td>
-                <td style={{ padding: "12px 16px" }}><div style={{ height: 6, background: COLORS.surface, borderRadius: 3, overflow: "hidden", width: 120 }}><div style={{ height: "100%", width: `${m.r2 * 100}%`, background: m.color, borderRadius: 3 }} /></div></td>
-              </tr>
-            ))}
-          </tbody>
+        <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.text, marginBottom: 16 }}>📋 Common Test-Set Benchmark</div>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+          <thead><tr style={{ borderBottom: `2px solid ${COLORS.border}` }}>{["Rank", "Model", "Category", "R²", "RMSE (pp)", "MAE (pp)"].map(h => <th key={h} style={{ padding: "10px 14px", textAlign: "left", color: COLORS.textMuted, fontSize: 11 }}>{h}</th>)}</tr></thead>
+          <tbody>{models.map((m, i) => <tr key={m.name} style={{ borderBottom: `1px solid ${COLORS.border}` }}>
+            <td style={{ padding: "11px 14px", color: COLORS.textDim }}>#{i + 1}</td><td style={{ padding: "11px 14px", color: COLORS.text, fontWeight: 600 }}><GlowDot color={m.color} /><span style={{ marginLeft: 8 }}>{m.name}</span>{i === 0 && <span style={{ marginLeft: 8, fontSize: 10, color: COLORS.primary }}>BEST</span>}</td>
+            <td style={{ padding: "11px 14px", color: COLORS.textDim }}>{m.category}</td><td style={{ padding: "11px 14px", color: COLORS.text }}>{m.r2.toFixed(4)}</td><td style={{ padding: "11px 14px", color: COLORS.textDim }}>{m.rmse.toFixed(4)}</td><td style={{ padding: "11px 14px", color: COLORS.textDim }}>{m.mae.toFixed(4)}</td>
+          </tr>)}</tbody>
         </table>
       </div>
     </div>
@@ -475,142 +332,141 @@ function ModelBenchmarkPanel() {
 }
 
 function ValidationPanel() {
-  const validationData = [
-    { scenario: "VS1", target: "Cd(II)", condition: "pH=6.2, C₀=18.5 mg/L, t=30 min", predicted: 96.5, experimental: 95.1, expStd: 0.8 },
-    { scenario: "VS2-a", target: "Pb(II)", condition: "pH=5.8, C₀=22.0 mg/L, t=30 min", predicted: 92.8, experimental: 91.3, expStd: 1.1 },
-    { scenario: "VS2-b", target: "Nap", condition: "pH=5.8, C₀=35.0 mg/L, t=30 min", predicted: 89.5, experimental: 87.2, expStd: 1.5 },
-  ];
-  const barData = validationData.map(v => ({ name: `${v.scenario}\n${v.target}`, Predicted: v.predicted, Experimental: v.experimental, error: v.expStd, absError: Math.abs(v.predicted - v.experimental).toFixed(1) }));
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
-        <MetricCard label="Mean APE" value="2.8" unit="%" color={COLORS.primary} subtitle="Avg Absolute % Error" icon="🎯" />
-        <MetricCard label="Paired t-test" value="p>0.05" unit="" color={COLORS.secondary} subtitle="No Significant Diff." icon="📊" />
-        <MetricCard label="Validation Pts" value="3" unit="" color={COLORS.warning} subtitle="Independent Experiments" icon="🧪" />
-        <MetricCard label="Max Error" value="2.4" unit="%" color={COLORS.accent} subtitle="VS2-b Nap" icon="📏" />
-      </div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-        <div style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 16, padding: 20 }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.text, marginBottom: 16, fontFamily: "'Space Grotesk', sans-serif" }}>📊 Predicted vs. Experimental Removal</div>
-          <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={barData} barGap={4}>
-              <CartesianGrid strokeDasharray="3 3" stroke={COLORS.border} />
-              <XAxis dataKey="name" stroke={COLORS.textMuted} fontSize={10} interval={0} />
-              <YAxis domain={[60, 100]} stroke={COLORS.textMuted} fontSize={11} label={{ value: "Removal (%)", angle: -90, position: "insideLeft", fill: COLORS.textMuted, fontSize: 10 }} />
-              <Tooltip contentStyle={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 8, fontSize: 12 }} />
-              <Legend wrapperStyle={{ fontSize: 11 }} />
-              <Bar dataKey="Predicted" fill={COLORS.primary} radius={[6, 6, 0, 0]} barSize={28} fillOpacity={0.8} />
-              <Bar dataKey="Experimental" fill={COLORS.secondary} radius={[6, 6, 0, 0]} barSize={28} fillOpacity={0.8} />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-        <div style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 16, padding: 20 }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.text, marginBottom: 16, fontFamily: "'Space Grotesk', sans-serif" }}>🎯 Prediction Accuracy (1:1 Line)</div>
-          <ResponsiveContainer width="100%" height={300}>
-            <ScatterChart>
-              <CartesianGrid strokeDasharray="3 3" stroke={COLORS.border} />
-              <XAxis dataKey="predicted" name="Predicted" domain={[70, 100]} stroke={COLORS.textMuted} fontSize={11} label={{ value: "Predicted (%)", position: "bottom", offset: -5, fill: COLORS.textMuted, fontSize: 10 }} />
-              <YAxis dataKey="experimental" name="Experimental" domain={[70, 100]} stroke={COLORS.textMuted} fontSize={11} label={{ value: "Experimental (%)", angle: -90, position: "insideLeft", fill: COLORS.textMuted, fontSize: 10 }} />
-              <Tooltip cursor={{ strokeDasharray: "3 3" }} contentStyle={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 8, fontSize: 12 }} />
-              <ReferenceLine segment={[{ x: 70, y: 70 }, { x: 100, y: 100 }]} stroke={COLORS.accent} strokeDasharray="5 5" strokeOpacity={0.6} />
-              <Scatter data={validationData} fill={COLORS.primary} r={8}>
-                {validationData.map((v, i) => <Cell key={i} fill={POLLUTANT_COLORS[v.target] || COLORS.primary} />)}
-              </Scatter>
-            </ScatterChart>
-          </ResponsiveContainer>
-        </div>
-      </div>
-      <div style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 16, padding: 20 }}>
-        <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.text, marginBottom: 16, fontFamily: "'Space Grotesk', sans-serif" }}>📋 Independent Experimental Validation Results</div>
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, fontFamily: "'Space Grotesk', sans-serif" }}>
-          <thead>
-            <tr style={{ borderBottom: `2px solid ${COLORS.border}` }}>
-              {["Scenario", "Pollutant", "Conditions", "Predicted (%)", "Experimental (%)", "|Error|"].map(h => <th key={h} style={{ padding: "10px 14px", textAlign: "left", color: COLORS.textMuted, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em" }}>{h}</th>)}
-            </tr>
-          </thead>
-          <tbody>
-            {validationData.map((v, i) => (
-              <tr key={i} style={{ borderBottom: `1px solid ${COLORS.border}` }}>
-                <td style={{ padding: "12px 14px", fontWeight: 600, color: COLORS.text }}>{v.scenario}</td>
-                <td style={{ padding: "12px 14px" }}><span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><GlowDot color={POLLUTANT_COLORS[v.target]} size={6} /><span style={{ color: POLLUTANT_COLORS[v.target] }}>{v.target}</span></span></td>
-                <td style={{ padding: "12px 14px", color: COLORS.textDim, fontSize: 12 }}>{v.condition}</td>
-                <td style={{ padding: "12px 14px", color: COLORS.primary, fontWeight: 600 }}>{v.predicted}%</td>
-                <td style={{ padding: "12px 14px", color: COLORS.secondary, fontWeight: 600 }}>{v.experimental} ± {v.expStd}%</td>
-                <td style={{ padding: "12px 14px" }}><span style={{ background: `${COLORS.primary}15`, color: COLORS.primary, padding: "3px 10px", borderRadius: 20, fontSize: 12, fontWeight: 600 }}>{Math.abs(v.predicted - v.experimental).toFixed(1)}%</span></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+  const groups = ["VS1", "VS2-a", "VS2-b"];
+  return <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+    <div style={{ background: `${COLORS.warning}10`, border: `1px solid ${COLORS.warning}35`, borderRadius: 16, padding: 20, color: COLORS.textDim, fontSize: 12, lineHeight: 1.7 }}>
+      <div style={{ color: COLORS.warning, fontWeight: 700, marginBottom: 6 }}>Validation results require source-data confirmation</div>
+      The protocol information currently available specifies pH 6; initial concentrations of 5 mg/L for Cd, Pb, and As and 50 mg/L for naphthalene; contact times of 10, 20, and 30 min; 2 g/L adsorbent dosage (0.1 g in 50 mL); and no competing ions. The original platform displayed numerical outcomes, but its predictions were generated by a hand-coded formula, and the displayed conditions conflict with this protocol. Therefore, no external-validation predictions or accuracy statistics are shown until the experimental outcomes and group-to-condition mapping are verified.
     </div>
-  );
+    <div style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 16, padding: 20, overflow: "auto" }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+        <thead><tr style={{ borderBottom: `2px solid ${COLORS.border}` }}>{["Validation group", "Protocol conditions", "Measured outcome", "NGBoost comparison"].map(h => <th key={h} style={{ padding: "11px 12px", textAlign: "left", color: COLORS.textMuted, fontSize: 10 }}>{h}</th>)}</tr></thead>
+        <tbody>{groups.map(group => <tr key={group} style={{ borderBottom: `1px solid ${COLORS.border}` }}>
+          <td style={{ padding: "13px 12px", color: COLORS.text, fontWeight: 600 }}>{group}</td>
+          <td style={{ padding: "13px 12px", color: COLORS.textDim }}>Shared protocol above; exact group/time mapping not yet available</td>
+          <td style={{ padding: "13px 12px", color: COLORS.textMuted }}>Raw result unavailable</td>
+          <td style={{ padding: "13px 12px", color: COLORS.textMuted }}>Pending verified measurements</td>
+        </tr>)}</tbody>
+      </table>
+    </div>
+  </div>;
 }
 
 function MaterialComparisonPanel() {
-  const adsorbents = ["MNCJG", "MNC", "NC", "NCJG", "MWM"];
-  const pollutants = ["Cd(II)", "Pb(II)", "As(III)", "Nap"];
-  const heatmapData = useMemo(() => adsorbents.flatMap(a => pollutants.map(p => ({ adsorbent: a, pollutant: p, removal: predictRemoval(a, p, 6, p === "Nap" ? 50 : 5, 30).mean }))), [adsorbents, pollutants]);
-  const cycleData = useMemo(() => Array.from({ length: 10 }, (_, i) => ({ cycle: i + 1, "Cd(II)": Math.max(75, 98 - i * 1.8 + (Math.random() - 0.5) * 2).toFixed(1), "Pb(II)": Math.max(78, 99 - i * 1.5 + (Math.random() - 0.5) * 2).toFixed(1), "As(III)": Math.max(60, 90 - i * 2.5 + (Math.random() - 0.5) * 2).toFixed(1), "Nap": Math.max(55, 85 - i * 2.0 + (Math.random() - 0.5) * 3).toFixed(1) })), []);
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-      <div style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 16, padding: 24 }}>
-        <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.text, marginBottom: 20, fontFamily: "'Space Grotesk', sans-serif" }}>🔥 Removal Efficiency Heatmap (pH=6, t=30 min)</div>
-        <div style={{ display: "grid", gridTemplateColumns: `100px repeat(${pollutants.length}, 1fr)`, gap: 4 }}>
-          <div />
-          {pollutants.map(p => <div key={p} style={{ textAlign: "center", fontSize: 12, fontWeight: 600, color: POLLUTANT_COLORS[p], padding: "8px 0" }}>{p}</div>)}
-          {adsorbents.map(a => (
-            <>
-              <div key={`label-${a}`} style={{ display: "flex", alignItems: "center", fontSize: 12, fontWeight: 600, color: COLORS.text, paddingRight: 8 }}>{a}</div>
-              {pollutants.map(p => {
-                const val = heatmapData.find(d => d.adsorbent === a && d.pollutant === p)?.removal || 0;
-                const intensity = val / 100;
-                const bg = val > 90 ? `${COLORS.primary}${Math.round(intensity * 60 + 20).toString(16)}` : val > 70 ? `${COLORS.secondary}${Math.round(intensity * 50 + 20).toString(16)}` : val > 50 ? `${COLORS.warning}${Math.round(intensity * 40 + 20).toString(16)}` : `${COLORS.accent}${Math.round(intensity * 30 + 20).toString(16)}`;
-                return <div key={`${a}-${p}`} style={{ background: bg, borderRadius: 10, padding: "16px 8px", textAlign: "center", border: `1px solid ${COLORS.border}` }}><div style={{ fontSize: 20, fontWeight: 700, color: COLORS.text }}>{val.toFixed(0)}%</div><div style={{ fontSize: 10, color: COLORS.textMuted, marginTop: 2 }}>Removal</div></div>;
-              })}
-            </>
-          ))}
-        </div>
-      </div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-        <div style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 16, padding: 20 }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.text, marginBottom: 16, fontFamily: "'Space Grotesk', sans-serif" }}>♻️ MNCJG Cycling Stability (10 Cycles)</div>
-          <ResponsiveContainer width="100%" height={260}>
-            <LineChart data={cycleData}>
-              <CartesianGrid strokeDasharray="3 3" stroke={COLORS.border} />
-              <XAxis dataKey="cycle" stroke={COLORS.textMuted} fontSize={11} label={{ value: "Cycle Number", position: "bottom", offset: -5, fill: COLORS.textMuted, fontSize: 10 }} />
-              <YAxis domain={[40, 105]} stroke={COLORS.textMuted} fontSize={11} label={{ value: "Removal (%)", angle: -90, position: "insideLeft", fill: COLORS.textMuted, fontSize: 10 }} />
-              <Tooltip contentStyle={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 8, fontSize: 12 }} />
-              <Legend wrapperStyle={{ fontSize: 11 }} />
-              {Object.entries(POLLUTANT_COLORS).map(([name, color]) => <Line key={name} type="monotone" dataKey={name} stroke={color} strokeWidth={2} dot={{ r: 3, fill: color }} />)}
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-        <div style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 16, padding: 20 }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.text, marginBottom: 16, fontFamily: "'Space Grotesk', sans-serif" }}>⚡ Kinetic Performance vs. Literature</div>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, fontFamily: "'Space Grotesk', sans-serif" }}>
-            <thead><tr style={{ borderBottom: `2px solid ${COLORS.border}` }}>{["Material", "Pollutant", "Time", "Removal"].map(h => <th key={h} style={{ padding: "8px 10px", textAlign: "left", color: COLORS.textMuted, fontSize: 10, textTransform: "uppercase" }}>{h}</th>)}</tr></thead>
-            <tbody>
-              {[
-                { mat: "MNCJG (This Work)", pol: "Cd(II)", time: "10 min", rem: "~100%", highlight: true },
-                { mat: "MNCJG (This Work)", pol: "Pb(II)", time: "10 min", rem: "~100%", highlight: true },
-                { mat: "MNCJG (This Work)", pol: "As(III)", time: "30 min", rem: "~100%", highlight: true },
-                { mat: "MBC350", pol: "Cd(II)", time: "24 h", rem: "~90%", highlight: false },
-                { mat: "FMBC", pol: "As(V)", time: "2 h", rem: "~95%", highlight: false },
-                { mat: "PM6:Y6", pol: "Dye", time: "60 min", rem: "~95%", highlight: false },
-              ].map((r, i) => (
-                <tr key={i} style={{ borderBottom: `1px solid ${COLORS.border}`, background: r.highlight ? `${COLORS.primary}05` : "transparent" }}>
-                  <td style={{ padding: "10px", color: r.highlight ? COLORS.primary : COLORS.textDim, fontWeight: r.highlight ? 600 : 400 }}>{r.mat}</td>
-                  <td style={{ padding: "10px", color: COLORS.textDim }}>{r.pol}</td>
-                  <td style={{ padding: "10px", color: r.highlight ? COLORS.warning : COLORS.textDim, fontWeight: 600 }}>{r.time}</td>
-                  <td style={{ padding: "10px", color: COLORS.text }}>{r.rem}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+  const [pH, setPH] = useState(6);
+  const [metalConc, setMetalConc] = useState(5);
+  const [napConc, setNapConc] = useState(50);
+  const [time, setTime] = useState(30);
+  const [volume, setVolume] = useState(50);
+  const [mass, setMass] = useState(0.1);
+  const [predictions, setPredictions] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [apiError, setApiError] = useState("");
+  const [cycleData, setCycleData] = useState([]);
+  const [cycleError, setCycleError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    const requests = ADSORBENTS.flatMap(adsorbent => POLLUTANTS.map(pollutant => ({
+      adsorbent, pollutant, pH, concentration: pollutant === "Nap" ? napConc : metalConc, volume, mass, time,
+    })));
+    setLoading(true);
+    setApiError("");
+    fetch(`${MODEL_API_BASE_URL}/api/predict/batch`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(requests),
+    }).then(r => { if (!r.ok) throw new Error(`Model API returned ${r.status}`); return r.json(); })
+      .then(rows => { if (!cancelled) setPredictions(rows); })
+      .catch(e => { if (!cancelled) setApiError(`NGBoost API is unavailable: ${e.message}`); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [pH, metalConc, napConc, time, volume, mass]);
+
+  const loadCycleFile = event => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setCycleError("");
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const lines = String(reader.result).replace(/^\uFEFF/, "").trim().split(/\r?\n/).filter(Boolean);
+        const headers = lines[0].split(/[\t,;]/).map(x => x.trim());
+        const required = ["cycle", "Cd(II)", "Pb(II)", "As(III)", "Nap"];
+        const indexes = required.map(name => headers.findIndex(h => h.toLowerCase() === name.toLowerCase()));
+        if (indexes.some(i => i < 0)) throw new Error("CSV headers must be: cycle,Cd(II),Pb(II),As(III),Nap");
+        const rows = lines.slice(1).map(line => {
+          const cells = line.split(/[\t,;]/).map(x => x.trim());
+          const row = Object.fromEntries(required.map((name, i) => [name, Number(cells[indexes[i]])]));
+          if (Object.values(row).some(v => !Number.isFinite(v))) throw new Error("Each row must contain numeric cycle and removal values.");
+          return row;
+        });
+        if (!rows.length) throw new Error("The file contains no data rows.");
+        setCycleData(rows);
+      } catch (e) {
+        setCycleData([]);
+        setCycleError(e.message);
+      }
+    };
+    reader.onerror = () => setCycleError("Could not read the selected file.");
+    reader.readAsText(file);
+  };
+
+  const cellStyle = (value) => {
+    const opacity = Math.max(0.14, Math.min(0.72, value / 140));
+    const hue = value >= 80 ? "6,214,160" : value >= 50 ? "17,138,178" : "239,71,111";
+    return { background: `rgba(${hue},${opacity})`, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: "14px 6px", textAlign: "center" };
+  };
+
+  return <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+    <div style={{ background: `${COLORS.secondary}10`, border: `1px solid ${COLORS.secondary}30`, borderRadius: 12, padding: 14, color: COLORS.textDim, fontSize: 12, lineHeight: 1.6 }}>
+      Material comparison values below are predictions from the fitted NGBoost model at the selected operating conditions; they are not experimental measurements. The cycling chart only displays values from a user-supplied experimental CSV.
+    </div>
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14, background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 16, padding: 18 }}>
+      <Slider label="pH" value={pH} onChange={setPH} min={2} max={8} step={0.5} />
+      <Slider label="Metal concentration" value={metalConc} onChange={setMetalConc} min={1} max={40} step={1} unit=" mg/L" />
+      <Slider label="Naphthalene concentration" value={napConc} onChange={setNapConc} min={1} max={100} step={1} unit=" mg/L" />
+      <Slider label="Contact time" value={time} onChange={setTime} min={0} max={30} step={1} unit=" min" />
+      <Slider label="Solution volume" value={volume} onChange={setVolume} min={10} max={100} step={10} unit=" mL" />
+      <Slider label="Adsorbent mass" value={mass} onChange={setMass} min={0.02} max={0.5} step={0.01} unit=" g" />
+    </div>
+    {apiError && <div style={{ color: COLORS.accent, background: `${COLORS.accent}12`, borderRadius: 10, padding: 12, fontSize: 12 }}>{apiError}</div>}
+    <div style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 16, padding: 22, opacity: loading ? 0.65 : 1 }}>
+      <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.text, marginBottom: 8 }}>🔥 NGBoost-predicted removal comparison</div>
+      <div style={{ fontSize: 11, color: COLORS.textMuted, marginBottom: 16 }}>pH {pH}; {time} min; metals C₀ {metalConc} mg/L; naphthalene C₀ {napConc} mg/L</div>
+      <div style={{ display: "grid", gridTemplateColumns: `110px repeat(${POLLUTANTS.length}, minmax(90px, 1fr))`, gap: 5, overflowX: "auto" }}>
+        <div />{POLLUTANTS.map(p => <div key={p} style={{ textAlign: "center", fontSize: 12, fontWeight: 600, color: POLLUTANT_COLORS[p], padding: 8 }}>{p}</div>)}
+        {ADSORBENTS.flatMap((adsorbent, i) => [
+          <div key={`label-${adsorbent}`} style={{ display: "flex", alignItems: "center", fontSize: 12, fontWeight: 600, color: COLORS.text }}>{adsorbent}</div>,
+          ...POLLUTANTS.map((pollutant, j) => {
+            const row = predictions?.[i * POLLUTANTS.length + j];
+            return <div key={`${adsorbent}-${pollutant}`} style={cellStyle(row?.mean || 0)} title={row ? `95% interval ${row.lower95.toFixed(2)}–${row.upper95.toFixed(2)}%` : "Waiting for NGBoost API"}>
+              <div style={{ fontSize: 19, fontWeight: 700, color: COLORS.text }}>{row ? `${row.mean.toFixed(1)}%` : "—"}</div>
+              <div style={{ fontSize: 9, color: COLORS.textDim, marginTop: 3 }}>{row ? `${row.lower95.toFixed(1)}–${row.upper95.toFixed(1)}%` : "95% interval"}</div>
+            </div>;
+          }),
+        ])}
       </div>
     </div>
-  );
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+      <div style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 16, padding: 20 }}>
+        <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.text, marginBottom: 8 }}>♻️ MNCJG cycling stability (experimental data)</div>
+        <div style={{ fontSize: 11, color: COLORS.textMuted, marginBottom: 12 }}>Upload a CSV with columns: cycle,Cd(II),Pb(II),As(III),Nap</div>
+        <input type="file" accept=".csv,.txt" onChange={loadCycleFile} style={{ color: COLORS.textDim, fontSize: 11, marginBottom: 12, maxWidth: "100%" }} />
+        {cycleError && <div style={{ color: COLORS.accent, fontSize: 11, marginBottom: 8 }}>{cycleError}</div>}
+        {cycleData.length ? <ResponsiveContainer width="100%" height={250}><LineChart data={cycleData}><CartesianGrid strokeDasharray="3 3" stroke={COLORS.border} /><XAxis dataKey="cycle" stroke={COLORS.textMuted} fontSize={10} /><YAxis domain={[0, 105]} stroke={COLORS.textMuted} fontSize={10} /><Tooltip /><Legend wrapperStyle={{ fontSize: 10 }} />{POLLUTANTS.map(name => <Line key={name} type="monotone" dataKey={name} stroke={POLLUTANT_COLORS[name]} strokeWidth={2} dot={{ r: 3 }} />)}</LineChart></ResponsiveContainer>
+          : <div style={{ minHeight: 185, display: "flex", alignItems: "center", justifyContent: "center", textAlign: "center", color: COLORS.textMuted, fontSize: 12, padding: 20 }}>No cycle measurements are loaded. Upload your regeneration/reuse experiment results to plot them here; no synthetic cycle values are inserted.</div>}
+      </div>
+      <div style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 16, padding: 20, maxHeight: 380, overflow: "auto" }}>
+        <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.text, marginBottom: 14 }}>📋 Model prediction details</div>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+          <thead><tr style={{ borderBottom: `2px solid ${COLORS.border}` }}>{["Material", "Pollutant", "Predicted", "95% interval"].map(h => <th key={h} style={{ padding: "8px 6px", textAlign: "left", color: COLORS.textMuted }}>{h}</th>)}</tr></thead>
+          <tbody>{ADSORBENTS.flatMap((adsorbent, i) => POLLUTANTS.map((pollutant, j) => {
+            const row = predictions?.[i * POLLUTANTS.length + j];
+            return <tr key={`${adsorbent}-${pollutant}`} style={{ borderBottom: `1px solid ${COLORS.border}` }}><td style={{ padding: 8, color: COLORS.text }}>{adsorbent}</td><td style={{ padding: 8, color: POLLUTANT_COLORS[pollutant] }}>{pollutant}</td><td style={{ padding: 8, color: COLORS.text }}>{row ? `${row.mean.toFixed(2)}%` : "—"}</td><td style={{ padding: 8, color: COLORS.textDim }}>{row ? `${row.lower95.toFixed(2)}–${row.upper95.toFixed(2)}%` : "—"}</td></tr>;
+          }))}</tbody>
+        </table>
+      </div>
+    </div>
+  </div>;
 }
 
 export default function App() {
@@ -635,7 +491,7 @@ export default function App() {
               <h1 style={{ fontSize: 18, fontWeight: 800, letterSpacing: "-0.03em", lineHeight: 1.2 }}>
                 <span style={{ background: `linear-gradient(90deg, ${COLORS.primary}, ${COLORS.secondary})`, WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>MNCJG Intelligent Remediation Platform</span>
               </h1>
-              <p style={{ fontSize: 11, color: COLORS.textMuted, marginTop: 2, fontFamily: "'JetBrains Mono', monospace" }}>ML-Driven Coconut Shell Biochar/MnOx Composite Design for Heavy Metal–Naphthalene Co-contamination</p>
+              <p style={{ fontSize: 11, color: COLORS.textMuted, marginTop: 2, fontFamily: "'JetBrains Mono', monospace" }}>Machine-learning-assisted performance prediction for heavy metal–naphthalene co-contamination</p>
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
@@ -643,26 +499,27 @@ export default function App() {
               <GlowDot color={COLORS.primary} size={6} />
               <span style={{ fontSize: 11, color: COLORS.primary, fontWeight: 600 }}>NGBoost v1.0</span>
             </div>
-            <div style={{ fontSize: 11, color: COLORS.textMuted, fontFamily: "'JetBrains Mono', monospace" }}>R² = 0.982 · MAPE = 2.8%</div>
+            <div style={{ fontSize: 11, color: COLORS.textMuted, fontFamily: "'JetBrains Mono', monospace" }}>R² = 0.9951 · RMSE = 2.5242</div>
           </div>
         </div>
       </header>
       <main style={{ maxWidth: 1400, margin: "0 auto", padding: "24px 32px" }}>
         <TabBar tabs={tabs} active={activeTab} onSelect={setActiveTab} />
         <div style={{ marginTop: 24 }}>
-          {activeTab === "predict" && <><SectionTitle subtitle="NGBoost probabilistic prediction engine with SHAP-based explainability. Adjust parameters to explore the multi-dimensional adsorption response landscape.">Forward Prediction Engine</SectionTitle><PredictionPanel /></>}
-          {activeTab === "optimize" && <><SectionTitle subtitle="Bayesian optimization with Expected Improvement acquisition function. Define remediation targets and let the algorithm discover optimal process conditions.">Inverse Design Optimization</SectionTitle><OptimizationPanel /></>}
-          {activeTab === "benchmark" && <><SectionTitle subtitle="Systematic comparison of 9 ML algorithms spanning linear, instance-based, bagging, and boosting paradigms on independent test set.">Multi-Algorithm Benchmark</SectionTitle><ModelBenchmarkPanel /></>}
-          {activeTab === "validate" && <><SectionTitle subtitle="Three independent validation scenarios (VS1–VS3) with conditions absent from the training database. Paired t-test confirms no significant prediction bias.">Independent Experimental Validation</SectionTitle><ValidationPanel /></>}
-          {activeTab === "material" && <><SectionTitle subtitle="Comparative analysis across five adsorbent variants (CSC→NC→MNC→NCJG→MNCJG) and cycling stability assessment over 10 regeneration cycles.">Material Performance Analysis</SectionTitle><MaterialComparisonPanel /></>}
+          {activeTab === "predict" && <><SectionTitle subtitle="Live NGBoost prediction and predictive intervals from the retrained 288-observation model.">Forward Prediction Engine</SectionTitle><PredictionPanel /></>}
+          {activeTab === "optimize" && <><SectionTitle subtitle="Explore operating conditions with predictions from the retrained NGBoost model.">Inverse Design Optimization</SectionTitle><OptimizationPanel /></>}
+          {activeTab === "benchmark" && <><SectionTitle subtitle="Nine models compared on the same 58-observation held-out test set.">Multi-Algorithm Benchmark</SectionTitle><ModelBenchmarkPanel /></>}
+          {activeTab === "validate" && <><SectionTitle subtitle="Protocol and source-data status for the three independent wet-lab validation groups.">Independent Experimental Validation</SectionTitle><ValidationPanel /></>}
+          {activeTab === "material" && <><SectionTitle subtitle="Compare NGBoost-predicted removal across materials and pollutants, and visualize your experimental reuse-cycle data.">Material Performance Analysis</SectionTitle><MaterialComparisonPanel /></>}
         </div>
       </main>
       <footer style={{ padding: "20px 32px", borderTop: `1px solid ${COLORS.border}`, marginTop: 40 }}>
         <div style={{ maxWidth: 1400, margin: "0 auto", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div style={{ fontSize: 11, color: COLORS.textMuted }}>Wang X.Y. et al. · Henan University · Engineering Research Center for Nanomaterials</div>
-          <div style={{ fontSize: 10, color: COLORS.textMuted, fontFamily: "'JetBrains Mono', monospace" }}>Built with NGBoost · SHAP · Bayesian Optimization · n=285 experimental datapoints</div>
+          <div style={{ fontSize: 10, color: COLORS.textMuted, fontFamily: "'JetBrains Mono', monospace" }}>Live NGBoost inference API · 288 modeling observations · test metrics on 58 held-out cases</div>
         </div>
       </footer>
     </div>
   );
 }
+
