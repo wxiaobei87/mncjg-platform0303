@@ -351,6 +351,8 @@ function ValidationPanel() {
       .then(rows => { if (!cancelled) setPredictions(rows); })
       .catch(e => { if (!cancelled) setApiError(e.message); });
     return () => { cancelled = true; };
+  // The validation cases are fixed constants for this one-time batch request.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   return <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
     <div style={{ background: `${COLORS.secondary}12`, border: `1px solid ${COLORS.secondary}40`, borderRadius: 16, padding: 20, color: COLORS.textDim, fontSize: 12, lineHeight: 1.7 }}>
