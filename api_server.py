@@ -2,6 +2,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from io import BytesIO
 import gzip
+import base64
 import json
 import joblib
 import numpy as np
@@ -10,10 +11,15 @@ import os
 
 HERE = Path(__file__).resolve().parent
 MODEL_PATH = HERE / "models" / "NGBoost_deployment_288data.joblib"
-MODEL_GZIP_PATH = Path(os.environ.get("MODEL_GZIP_PATH", "/etc/secrets/NGBoost_deployment_288data.joblib.gz"))
+MODEL_B64_PATHS = [Path(p) for p in os.environ.get(
+    "MODEL_B64_PATHS",
+    "/etc/secrets/NGBoost_model_part1.txt,/etc/secrets/NGBoost_model_part2.txt",
+).split(",") if p.strip()]
 ALLOWED_ORIGIN = os.environ.get("ALLOWED_ORIGIN", "http://localhost:3000")
-if MODEL_GZIP_PATH.is_file():
-    MODEL = joblib.load(BytesIO(gzip.decompress(MODEL_GZIP_PATH.read_bytes())))
+if MODEL_B64_PATHS and all(p.is_file() for p in MODEL_B64_PATHS):
+    encoded_model = b"".join(p.read_bytes().strip() for p in MODEL_B64_PATHS)
+    compressed_model = base64.b64decode(encoded_model, validate=True)
+    MODEL = joblib.load(BytesIO(gzip.decompress(compressed_model)))
 else:
     MODEL = joblib.load(MODEL_PATH)
 POLLUTANT_MAP = {"Cd(II)": "Cd", "Pb(II)": "Pb", "As(III)": "As", "Nap": "萘", "Naphthalene": "萘"}

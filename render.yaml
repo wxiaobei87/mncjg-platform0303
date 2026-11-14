@@ -9,5 +9,5 @@ services:
     envVars:
       - key: ALLOWED_ORIGIN
         value: https://wxiaobei87.github.io
-      - key: MODEL_GZIP_PATH
-        value: /etc/secrets/NGBoost_deployment_288data.joblib.gz
+      - key: MODEL_B64_PATHS
+        value: /etc/secrets/NGBoost_model_part1.txt,/etc/secrets/NGBoost_model_part2.txt
