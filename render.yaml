@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: mncjg-ngboost-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      - key: ALLOWED_ORIGIN
+        value: https://wxiaobei87.github.io
+      - key: MODEL_GZIP_PATH
+        value: /etc/secrets/NGBoost_deployment_288data.joblib.gz
