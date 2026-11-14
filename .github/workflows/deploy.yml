@@ -11,7 +11,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: "pages"
+  group: pages
   cancel-in-progress: false
 
 jobs:
@@ -25,13 +25,20 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '18'
-          cache: 'npm'
+          cache: npm
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
       - name: Build
-        run: CI=false npm run build
+        env:
+          REACT_APP_API_BASE_URL: ${{ vars.MNCJG_API_BASE_URL }}
+        run: |
+          if [ -z "$REACT_APP_API_BASE_URL" ]; then
+            echo "Set the repository Actions variable MNCJG_API_BASE_URL to the deployed NGBoost API URL."
+            exit 1
+          fi
+          npm run build
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
